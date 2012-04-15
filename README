@@ -1,0 +1,18 @@
+aquosop
+
+AQUOSをRS-232C経由で操作するためのツールです.
+BSDライセンスなので適当に使って下さい.
+
+実行にはCPANのDevice::SerialPortモジュールが必要です.
+$ sudo cpan -i Device::SerialPort
+
+シリアルポートはデフォルトで/dev/ttyUSB0を想定しています.
+USB-RS232C変換ケーブルを使っている場合は特に設定を変更しなくても良いです.
+違うデバイスを使用する場合はソースコードの$DEVICEを変更して下さい.
+
+使い方はhelpを参照.
+$ aquos --help
+
+たまにロックファイルを残したままになってしまい、起動できないときがあるので
+そういうときはロックファイルを削除しましょう.
+$ sudo rm /var/lock/aquosop

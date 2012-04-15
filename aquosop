@@ -1,0 +1,660 @@
+#!/usr/bin/perl
+################################################################################
+# Copyright (c) 2012 Masahiro Sano
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or WITHOUT
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above Copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above Copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR(S) ``AS IS'' AND ANY EXPRESS OR
+# IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+# OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+# IN NO EVENT SHALL THE AUTHOR(S) BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+# NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+# THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+################################################################################
+
+use 5.010;
+use strict;
+use warnings;
+use Getopt::Long;
+use Device::SerialPort qw( :PARAM :STAT );
+
+# need to configure serial device (unless using usb-serial)
+my $DEVICE = '/dev/ttyUSB0';
+
+# DON'T modify unless you know about locking
+my $LOCK_FILE = '/var/lock/aquosop';
+
+# DON'T modify following variables.
+my $BAUD_RATE = 9600;
+my $PARITY_CHECK = "none";
+my $DATA_BITS = 8;
+my $STOP_BITS = 1;
+my $FLOW_CONTROL = "none";
+################################################################################
+my $handler;
+my %opts;
+$opts{function} = '';
+$opts{option} = '';
+
+GetOptions(
+    \%opts,
+    'function=s',
+    'option=s',
+    'argument=i',
+    'help' => \&help,
+    );
+
+
+given($opts{function}) {
+    when ([
+        'power', 'input', 'channel', 'av_position',
+        'volume', 'position', 'clock', 'window',
+        'mute', 'surround', 'sound', 'timer'
+          ])
+    #{ $handler = $opts{function} . '_handler' }
+    { $handler = main->can($opts{function} . '_handler') }
+    default { say "No such function: $opts{function}"; help() }
+}
+
+my $serial = init();
+$handler->($opts{option}, $opts{argument});
+exit;
+
+sub init {
+    my $serial = new Device::SerialPort ($DEVICE, 1, $LOCK_FILE)
+        or die "Can't open $DEVICE: $!\n";
+
+    $serial->baudrate($BAUD_RATE);
+    $serial->parity($PARITY_CHECK);
+    $serial->databits($DATA_BITS);
+    $serial->stopbits($STOP_BITS); 
+    $serial->handshake($FLOW_CONTROL); 
+    #$serial->read_const_time(5000);
+    $serial->read_char_time(5);
+    $serial->write_settings or $serial->close();
+    $serial;
+}
+
+sub command {
+    my ($_a, $_b) = @_;
+
+    my $cmd = sprintf("%-4s%-4s\r", $_a, $_b);
+    $serial->write($cmd);
+    say $cmd;
+
+    my $ret = '';
+    while(1) {
+        my ($count, $char) = $serial->read(1);
+        next if ($count == 0);
+        last if ($char eq "\r");
+        $ret .= $char;
+    }
+
+    say $ret;
+    if ($ret eq "OK") {
+        return 0;
+    }
+    elsif ($ret eq "ERR") {
+        return -1;
+    }
+    else {
+        return $ret;
+    }
+}
+
+################################################################################
+sub power_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['toggle', '']) { toggle_power() }
+        when (['on'])         { power_on() }
+        when (['off'])        { power_off() }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub get_power {
+    command('POWR', '?');
+}
+
+sub toggle_power {
+    my $ret = command('POWR', '?');
+    if ($ret == 1) {
+        return power_off();
+    }
+    elsif ($ret == 0) {
+        return power_on();
+    }
+    return $ret;
+}
+
+sub power_on {
+    command('POWR', 1);
+}
+
+sub power_off {
+    command('POWR', 0);
+}
+
+################################################################################
+sub input_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['toggle', '']) {
+            toggle_input_swith()
+        }
+        when (['tv', 'ilink', 'digital']) {
+            main->can('set_input_switch_' . $option)->();
+        }
+        when (['input']) {
+            set_input_switch_input($arg);
+        }    
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub toggle_input_switch {
+    command('ITGD', '');
+}
+
+sub set_input_switch_tv {
+    command('ITVD', '');
+}
+
+sub set_input_switch_input {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(1 <= $_b && $_b <= 7));
+    command('IAVD', $_b);
+}
+
+sub set_input_switch_ilink {
+    command('LINK', '');
+}
+
+sub set_input_switch_digital {
+    command('IDEG', '');
+}
+
+################################################################################
+sub channel_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['bs', 'cs', 'catv', 'analog', 'digital']) {
+            my $func;
+            if (!defined $arg) {
+                $func = main->can('get_' . $option . '_channel');
+            }
+            else {
+                $func = main->can('set_' . $option . '_channel');
+            }
+            say $func->($arg);
+        }
+        when (['up', 'down']) {
+            main->can($option . '_channel')->();
+        }
+        when ('') { say "channel function needs option"; help()}
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub get_analog_channel {
+    command('CAIR', '?');
+}
+
+sub set_analog_channel {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(1 <= $_b && $_b <= 20));
+    command('CAIR', $_b);
+}
+
+sub get_catv_channel {
+    command('CATV', '?');
+}
+
+sub set_catv_channel {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(13 <= $_b && $_b <= 63));
+    command('CATV', $_b);
+}
+
+sub get_bs_channel {
+    command('CBSD', '?');
+}
+
+sub set_bs_channel {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(0 <= $_b && $_b <= 999));
+    command('CBSD', $_b);
+}
+
+
+sub get_cs_channel {
+    command('CCDS', '?');
+}
+
+sub set_cs_channel {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(0 <= $_b && $_b <= 999));
+    command('CCDS', $_b);
+}
+
+sub get_digital_channel {
+    command('CTBD', '?');
+}
+
+sub set_digital_channel {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(0 <= $_b && $_b <= 999));
+    command('CTBD', $_b);
+}
+
+sub up_channel {
+    command('CHUP', '');
+}
+
+sub down_channel {
+    command('CHDW', '');
+}
+
+################################################################################
+sub av_position_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when ('toggle') {
+            toggle_av_position();
+        }
+        when ([
+            'normal', 'cinema', 'game',
+            'memory', 'fdynamic', 'dynamic', 'pc',
+              ]) {
+            main->can('set_av_position_' . $option)->();
+        }
+        when ('') {
+            get_av_position();
+        }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub get_av_position {
+    command('AVMD', '?');
+}
+
+sub toggle_av_position {
+    command('AVMD', 0);
+}
+
+sub set_av_position_normal {
+    command('AVMD', 1);
+}
+
+sub set_av_position_cinema {
+    command('AVMD', 2);
+}
+
+sub set_av_position_game {
+    command('AVMD', 3);
+}
+
+sub set_av_position_memory {
+    command('AVMD', 4);
+}
+
+sub set_av_position_fdynamic {
+    command('AVMD', 5);
+}
+
+sub set_av_position_dynamic {
+    command('AVMD', 6);
+}
+
+sub set_av_position_pc {
+    command('AVMD', 7);
+}
+
+################################################################################
+sub volume_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when ('up') { up_volume() }
+        when ('down') { down_volume() }
+        when ('') {
+            if (!defined $arg) {
+                return get_volume();
+            }
+            else {
+                return set_volume($arg);
+            }
+        }    
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub get_volume {
+    command('VOLM', '?');
+}
+
+sub set_volume {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(0 <= $_b && $_b <= 60));
+    command('VOLM', $_b);
+}
+
+sub up_volume {
+    my $v = get_volume();
+    set_volume($v + 1);
+}
+
+sub down_volume {
+    my $v = get_volume();
+    set_volume($v - 1);
+}
+
+################################################################################
+sub position_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['horizontal', 'vertical']) {
+            if (!defined $arg) {
+                main->can('get_' . $option . '_position')->();
+            }
+            else {
+                main->can('set_' . $option . '_position')->($arg);
+            }
+        }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub get_horizontal_position {
+    command('HPOS', '?');
+}
+
+sub set_horizontal_position {
+    my $_b = shift;
+    command('HPOS', $_b);
+}
+
+sub get_vertical_position {
+    command('VPOS', '?');
+}
+sub set_vertical_position {
+    my $_b = shift;
+    command('VPOS', $_b);
+}
+
+################################################################################
+sub clock_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when ('freq') { set_clock_frequency($arg) }
+        when ('phase') { set_clock_phase($arg) }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub set_clock_frequency {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(0 <= $_b && $_b <= 180));
+    command('CLCK', $_b);
+}
+
+sub set_clock_phase {
+    my $_b = shift;
+    return -1 if (!defined $_b || !(0 <= $_b && $_b <= 30));
+    command('PHSE', $_b);
+}
+
+################################################################################
+sub window_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when ('toggle') {
+            toggle_window();
+        }
+        when ([
+            'normal', 'smart', 'wide', 'cinema',
+            'full', 'full1', 'full2',
+            'underscan', 'dotbydot'
+              ]) {
+            main->can('set_window_' . $option)->();
+        }
+        when ('') {
+            get_window();
+        }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub get_window {
+    command('WIDE', '?');
+}
+
+sub toggle_window {
+    command('WIDE', 0);
+}
+
+sub set_window_normal {
+    command('WIDE', 1);
+}
+
+sub set_window_smart {
+    command('WIDE', 2);
+}
+
+sub set_window_wide {
+    command('WIDE', 3);
+}
+
+sub set_window_cinema {
+    command('WIDE', 4);
+}
+
+sub set_window_full {
+    command('WIDE', 5);
+}
+
+sub set_window_full1 {
+    command('WIDE', 6);
+}
+
+sub set_window_full2 {
+    command('WIDE', 7);
+}
+
+sub set_window_underscan {
+    command('WIDE', 8);
+}
+
+sub set_window_dotbydot {
+    command('WIDE', 9);
+}
+
+################################################################################
+sub mute_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['toggle', '']) { toggle_mute() }
+        when ('on') { set_mute() }
+        when ('off') { unset_mute() }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub toggle_mute {
+    command('MUTE', 0);
+}
+
+sub set_mute {
+    command('MUTE', 1);
+}
+
+sub unset_mute {
+    command('MUTE', 2);
+}
+
+################################################################################
+sub surround_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['toggle', '']) { toggle_surround() }
+        when ('on') { set_surround() }
+        when ('off') { unset_surround() }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub toggle_surround {
+    command('ASCU', 0);
+}
+
+sub set_surround {
+    command('ASCU', 1);
+}
+
+sub unset_surround {
+    command('ASCU', 2);
+}
+
+################################################################################
+sub sound_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['toggle', '']) { toggle_sound() }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub toggle_sound {
+    command('ACHA', '');
+}
+
+################################################################################
+sub timer_handler {
+    my ($option, $arg) = @_;
+    given($option) {
+        when (['cancel', 'unset']) {
+            unset_offtimer();
+        }
+        when (['30m', '60m', '90m', '120m', '150m']) {
+            main->can('set_offtimer_' . $option)->();
+        }
+        when ('') {
+            get_offtimer();
+        }
+        default { say "No such option: $option"; help()}
+    }
+}
+
+sub get_offtimer {
+    command('OFTM', '?');
+}
+
+sub unset_offtimer {
+    command('OFTM', 0);
+}
+
+sub set_offtimer_30m {
+    command('OFTM', 1);
+}
+
+sub set_offtimer_60m {
+    command('OFTM', 2);
+}
+
+sub set_offtimer_90m {
+    command('OFTM', 3);
+}
+
+sub set_offtimer_120m {
+    command('OFTM', 4);
+}
+
+sub set_offtimer_150m {
+    command('OFTM', 5);
+}
+
+################################################################################
+sub help {
+    print <<EOF;
+Usage: aquosop -f <func> [-o <opt>] [-a <arg>]
+function:
+    power
+      option:
+        toggle, on, off    - switch on/off or toggle the power
+        [NO OPT]           - same with toggle
+    input - switch input
+      option:
+        toggle             - like an input switch button
+        tv, ilink, digital - switch to selected option
+        input              - switch to input set by arg
+        [NO OPT]           - same with toggle
+    channel - switch channel
+      option: 
+        bs, cs, catv,
+        analog, digital    - switch channel set by arg
+                             or get current channel
+        up, down           - switch channel in (reverse) order
+    av_position
+      option:
+        toggle, normal, cinema,
+        game, memory, fdynamic, dynamic
+        [NO OPT]           - get current value
+    volume
+      option:
+        up                 - volume up
+        down               - volume down
+        [NO OPT]           - set the volume to argument value
+                             or get the current volume
+    position - move the window position
+      option:
+        horizontal         - move horizontally by argument value
+                             or get current position
+        vertical           - move vertically by argument value
+                             or get current position
+    clock
+      option:
+        freq               - set clock frequency
+        phase              - set clock phase
+    window
+      option:
+        toggle, normal, smart, wide, cinema, 
+        full, full1, full2, underscan, dotbydot
+        [NO OPT]           - get current value
+    mute
+      option:
+        toggle, on, off    - on/off/toggle mute
+        [NO OPT]           - same with toggle
+    surround
+      option:
+        toggle, on, off    - switch on/off/toggle surround
+        [NO OPT]           - same with toggle
+    sound
+      option:
+        toggle             - toggle sound
+        [NO OPT]           - same with toggle
+    timer
+      option:
+        cancel             - cancel current off-timer
+        unset              - same with cancel
+        30m                - set off-timer 30 minutes
+        60m                - set off-timer 60 minutes
+        90m                - set off-timer 90 minutes
+        120m               - set off-timer 120 minutes
+        150m               - set off-timer 150 minutes
+        [NO OPT]           - get remaining off-timer minutes
+EOF
+    exit 0;
+}
